@@ -16,6 +16,9 @@ class OpenAITextEmbedding(EmbeddingModelBase):
     supported_modalities: list[str] = ["text"]
     """This class only supports text input."""
 
+    max_batch_size: int = 2048
+    """Maximum number of inputs per API request (OpenAI limit)."""
+
     def __init__(
         self,
         api_key: str,
@@ -36,8 +39,6 @@ class OpenAITextEmbedding(EmbeddingModelBase):
             embedding_cache (`EmbeddingCacheBase | None`, defaults to `None`):
                 The embedding cache class instance, used to cache the
                 embedding results to avoid repeated API calls.
-
-        # TODO: handle batch size limit and token limit
         """
         import openai
 
@@ -53,9 +54,13 @@ class OpenAITextEmbedding(EmbeddingModelBase):
     ) -> EmbeddingResponse:
         """Call the OpenAI embedding API.
 
+        Inputs exceeding ``max_batch_size`` are automatically split into
+        multiple requests and the results are merged.
+
         Args:
             text (`List[str | TextBlock]`):
-                The input text to be embedded. It can be a list of strings.
+                The input text to be embedded. It can be a list of strings
+                or ``TextBlock`` dicts.
         """
         gather_text = []
         for _ in text:
@@ -68,42 +73,47 @@ class OpenAITextEmbedding(EmbeddingModelBase):
                     "Input text must be a list of strings or TextBlock dicts.",
                 )
 
-        kwargs = {
-            "input": gather_text,
-            "model": self.model_name,
-            "dimensions": self.dimensions,
-            "encoding_format": "float",
-            **kwargs,
-        }
+        all_embeddings: List[Any] = []
+        total_tokens = 0
+        total_time = 0.0
 
-        if self.embedding_cache:
-            cached_embeddings = await self.embedding_cache.retrieve(
-                identifier=kwargs,
-            )
-            if cached_embeddings:
-                return EmbeddingResponse(
-                    embeddings=cached_embeddings,
-                    usage=EmbeddingUsage(
-                        tokens=0,
-                        time=0,
-                    ),
-                    source="cache",
+        for batch_start in range(0, len(gather_text), self.max_batch_size):
+            batch = gather_text[batch_start : batch_start + self.max_batch_size]
+            batch_kwargs = {
+                "input": batch,
+                "model": self.model_name,
+                "dimensions": self.dimensions,
+                "encoding_format": "float",
+                **kwargs,
+            }
+
+            if self.embedding_cache:
+                cached_embeddings = await self.embedding_cache.retrieve(
+                    identifier=batch_kwargs,
+                )
+                if cached_embeddings:
+                    all_embeddings.extend(cached_embeddings)
+                    continue
+
+            start_time = datetime.now()
+            response = await self.client.embeddings.create(**batch_kwargs)
+            total_time += (datetime.now() - start_time).total_seconds()
+            total_tokens += response.usage.total_tokens
+
+            batch_embeddings = [_.embedding for _ in response.data]
+
+            if self.embedding_cache:
+                await self.embedding_cache.store(
+                    identifier=batch_kwargs,
+                    embeddings=batch_embeddings,
                 )
 
-        start_time = datetime.now()
-        response = await self.client.embeddings.create(**kwargs)
-        time = (datetime.now() - start_time).total_seconds()
-
-        if self.embedding_cache:
-            await self.embedding_cache.store(
-                identifier=kwargs,
-                embeddings=[_.embedding for _ in response.data],
-            )
+            all_embeddings.extend(batch_embeddings)
 
         return EmbeddingResponse(
-            embeddings=[_.embedding for _ in response.data],
+            embeddings=all_embeddings,
             usage=EmbeddingUsage(
-                tokens=response.usage.total_tokens,
-                time=time,
+                tokens=total_tokens,
+                time=total_time,
             ),
         )
