@@ -1,6 +1,6 @@
 # AgentScope – AI Assistant Guide (CLAUDE.md)
 
-AgentScope is a flexible, production-ready multi-agent framework (v1.0.19dev) by Alibaba Tongyi Lab. It supports building, running, and evaluating multi-agent pipelines with integrations for major LLM providers, RAG, memory, MCP, A2A, real-time voice, and model tuning.
+AgentScope is a flexible, production-ready multi-agent framework (v1.0.18) by Alibaba Tongyi Lab. It supports building, running, and evaluating multi-agent pipelines with integrations for major LLM providers, RAG, memory, MCP, A2A, real-time voice, and model tuning.
 
 - **External docs:** https://doc.agentscope.io/
 - **License:** Apache 2.0
@@ -18,24 +18,27 @@ agentscope/
 │   ├── model/           # LLM provider integrations
 │   ├── formatter/       # Message formatters per model family
 │   ├── tool/            # Toolkit, ToolResponse, built-in tools
-│   ├── memory/          # WorkingMemory, LongTermMemory
-│   ├── pipeline/        # ChatRoom, MessageHub, functional pipeline
+│   ├── memory/          # InMemoryMemory, RedisMemory, LongTermMemory backends
+│   ├── pipeline/        # ChatRoom, MsgHub, SequentialPipeline, FanoutPipeline
 │   ├── session/         # JSONSession, RedisSession
 │   ├── rag/             # Readers, vector stores, knowledge bases
 │   ├── evaluate/        # Evaluation framework and benchmarks
 │   ├── tracing/         # OpenTelemetry integration
-│   ├── realtime/        # WebSocket-based voice agents
-│   ├── tts/             # Text-to-Speech integrations
+│   ├── realtime/        # WebSocket-based real-time voice agents
+│   ├── tts/             # Text-to-Speech model integrations
 │   ├── mcp/             # Model Context Protocol clients
 │   ├── a2a/             # Agent-to-Agent protocol
-│   ├── tuner/           # DSPy / Trinity-RFT model finetuning
-│   ├── embedding/       # Embedding model integrations
+│   ├── tuner/           # DSPy / Trinity-RFT model and prompt tuning
+│   ├── embedding/       # Embedding model integrations and caching
 │   ├── token/           # Token counting per provider
 │   ├── hooks/           # Hook system (pre/post reply/observe/print)
-│   ├── plan/            # Planning utilities
+│   ├── plan/            # Plan management and notebook utilities
+│   ├── module/          # StateModule for state management
+│   ├── types/           # Type definitions and protocols
 │   ├── exception/       # Custom exceptions
+│   ├── tune/            # Placeholder module
 │   └── _utils/          # Internal utilities
-├── tests/               # 60+ unit test files
+├── tests/               # 46 unit test files
 ├── examples/            # Working example scripts
 ├── docs/                # Tutorial source (English + Chinese)
 ├── .github/workflows/   # CI/CD pipelines
@@ -181,11 +184,15 @@ Use reStructuredText for links, notes, tips, and code blocks:
 
 Never add optional dependencies to the core `dependencies` list.
 
+**Core dependencies** (may be imported at module top level): `aiofiles`, `aioitertools`, `anthropic`, `dashscope`, `docstring_parser`, `filetype`, `json5`, `json_repair`, `mcp>=1.13`, `numpy`, `openai`, `opentelemetry-*`, `python-datauri`, `python-frontmatter`, `python-socketio`, `shortuuid`, `sounddevice`, `sqlalchemy`, `tiktoken`.
+
+**Optional dependency groups:** `a2a`, `realtime`, `models` (ollama, gemini), `tokens` (transformers, jinja2), `redis_memory`, `mem0ai`, `reme`, `memory`, `readers`, `vdbs`, `rag`, `evaluate`, `tuner`, `full`.
+
 ---
 
 ## Pre-commit Checks
 
-The pipeline enforces: `black` (79-char line limit), `flake8`, `pylint`, `mypy` (strict), `check-yaml/json/toml`, `detect-private-key`, `add-trailing-comma`.
+The pipeline enforces: `black` (79-char line limit), `flake8`, `pylint`, `mypy` (strict), `check-yaml/json/toml`, `detect-private-key`, `add-trailing-comma`, `pyroma`.
 
 - **File-level skip comments are prohibited** (e.g., `# noqa: ALL`, `# type: ignore` on a whole file).
 - The only permitted skip is for agent system prompt parameters where `\n` formatting would break checks.
@@ -218,14 +225,22 @@ PRs with "WIP" in the title skip CI. PR title format is validated automatically 
 
 ### Message System
 
-`Msg` is the core message object:
+`Msg` is the core message object. `content` can be a plain string or a list of typed `ContentBlock` objects:
 
 ```python
 from agentscope.message import Msg
 
 msg = Msg(name="Alice", content="Hello!", role="user")
-# content can also be a list of ContentBlock (TextBlock, ToolUseBlock, ImageBlock, etc.)
+# Multi-modal content using ContentBlocks:
+from agentscope.message import TextBlock, ImageBlock, URLSource
+msg = Msg(name="Alice", role="user", content=[
+    TextBlock(text="What's in this image?"),
+    ImageBlock(image=URLSource(url="https://example.com/img.png")),
+])
 ```
+
+Available block types: `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `ImageBlock`, `AudioBlock`, `VideoBlock`.
+Available sources: `Base64Source`, `URLSource`.
 
 ### Agent Lifecycle
 
@@ -240,6 +255,12 @@ class MyAgent(AgentBase):
 
 Hook points: `pre_reply`, `post_reply`, `pre_observe`, `post_observe`, `pre_print`, `post_print`.
 
+**Built-in agents:**
+- `ReActAgent` / `ReActAgentBase` – tool-calling ReAct loop
+- `UserAgent` – wraps `TerminalUserInput` or `StudioUserInput`
+- `A2AAgent` – Agent-to-Agent protocol
+- `RealtimeAgent` – WebSocket-based real-time voice
+
 ### Tool / Toolkit
 
 ```python
@@ -253,51 +274,114 @@ def my_tool(x: int) -> str:
     return str(x)
 ```
 
+Built-in tools available: `execute_python_code`, `execute_shell_command`, `view_text_file`, `write_text_file`, `insert_text_file`, plus DashScope and OpenAI multimodal helpers (image, audio, video generation/transcription).
+
 ### Model Integration
 
-Models are in `src/agentscope/model/`. Each provider has a corresponding formatter in `src/agentscope/formatter/`. When adding a new provider:
+Models live in `src/agentscope/model/`. Each provider has a paired formatter in `src/agentscope/formatter/`. When adding a new provider:
 1. Create `_my_provider_model.py` in `model/`
 2. Create `_my_provider_formatter.py` in `formatter/`
 3. Export from the respective `__init__.py`
 4. Add any required optional deps to `pyproject.toml`
 
+**Supported providers:** `OpenAIChatModel`, `AnthropicChatModel`, `GeminiChatModel`, `DashScopeChatModel`, `OllamaChatModel`, `TrinityChatModel`.
+
+**Formatters:** OpenAI, Anthropic, Gemini, DashScope, Ollama, DeepSeek (each with `ChatFormatter` and `MultiAgentFormatter` variants), plus `A2AChatFormatter`.
+
 ### Memory
 
 ```python
-from agentscope.memory import WorkingMemory
+from agentscope.memory import InMemoryMemory
 
-mem = WorkingMemory()
+mem = InMemoryMemory()
 mem.add(msg)
 history = mem.get_messages()
 ```
 
-Long-term memory backends: `JSONSession`, `RedisSession` (requires `redis` optional dep).
+**Working memory backends:** `InMemoryMemory`, `RedisMemory`, `AsyncSQLAlchemyMemory`.
+
+**Long-term memory backends:** `Mem0LongTermMemory`, `ReMePersonalLongTermMemory`, `ReMeTaskLongTermMemory`, `ReMeToolLongTermMemory` (require respective optional deps).
+
+### Pipeline / Multi-Agent
+
+```python
+from agentscope.pipeline import MsgHub, ChatRoom, sequential_pipeline, fanout_pipeline
+
+# Functional pipeline
+result = await sequential_pipeline([agent_a, agent_b], initial_msg)
+results = await fanout_pipeline([agent_a, agent_b], initial_msg)
+
+# Class-based
+pipeline = SequentialPipeline([agent_a, agent_b])
+```
+
+### MCP Client
+
+```python
+from agentscope.mcp import StdIOStatefulClient, HttpStatelessClient, HttpStatefulClient
+```
+
+Clients: `StdIOStatefulClient` (subprocess), `HttpStatelessClient`, `HttpStatefulClient`.
+
+### Plan / Notebook
+
+```python
+from agentscope.plan import Plan, SubTask, PlanNotebook, InMemoryPlanStorage
+```
+
+### State Module
+
+```python
+from agentscope.module import StateModule
+```
 
 ---
 
 ## Module Quick Reference
 
-| Module | Purpose |
+| Module | Key Exports |
 |---|---|
-| `agentscope.agent` | Agent base classes and built-in agents |
-| `agentscope.message` | `Msg`, `ContentBlock` types |
-| `agentscope.model` | LLM provider clients (OpenAI, Anthropic, Gemini, DashScope, Ollama, Trinity) |
-| `agentscope.formatter` | Convert `Msg` objects to provider-specific API format |
-| `agentscope.tool` | `Toolkit`, `ToolResponse`, built-in tools |
-| `agentscope.memory` | `WorkingMemory`, `LongTermMemory` |
-| `agentscope.pipeline` | Multi-agent orchestration (`ChatRoom`, `MessageHub`) |
-| `agentscope.session` | Session persistence (`JSONSession`, `RedisSession`) |
-| `agentscope.rag` | RAG pipeline (readers, vector stores, knowledge base) |
-| `agentscope.evaluate` | Evaluation framework and benchmarks |
-| `agentscope.tracing` | OpenTelemetry tracing |
-| `agentscope.realtime` | Real-time voice agent (WebSocket) |
-| `agentscope.tts` | Text-to-Speech |
-| `agentscope.mcp` | MCP client support |
-| `agentscope.a2a` | Agent-to-Agent protocol |
-| `agentscope.tuner` | Model finetuning (DSPy, Trinity-RFT) |
-| `agentscope.embedding` | Embedding models |
-| `agentscope.hooks` | Hook system |
-| `agentscope.exception` | Custom exceptions |
+| `agentscope.agent` | `AgentBase`, `ReActAgentBase`, `ReActAgent`, `UserAgent`, `A2AAgent`, `RealtimeAgent`, `TerminalUserInput`, `StudioUserInput` |
+| `agentscope.message` | `Msg`, `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock`, `ImageBlock`, `AudioBlock`, `VideoBlock`, `Base64Source`, `URLSource`, `ContentBlock` |
+| `agentscope.model` | `ChatModelBase`, `ChatResponse`, `OpenAIChatModel`, `AnthropicChatModel`, `GeminiChatModel`, `DashScopeChatModel`, `OllamaChatModel`, `TrinityChatModel` |
+| `agentscope.formatter` | `FormatterBase`, `TruncatedFormatterBase`, plus Chat/MultiAgent formatters for OpenAI, Anthropic, Gemini, DashScope, Ollama, DeepSeek, A2A |
+| `agentscope.tool` | `Toolkit`, `ToolResponse`, code/file/multimodal built-in tools |
+| `agentscope.memory` | `MemoryBase`, `InMemoryMemory`, `RedisMemory`, `AsyncSQLAlchemyMemory`, `LongTermMemoryBase`, `Mem0LongTermMemory`, `ReMe*LongTermMemory` |
+| `agentscope.pipeline` | `MsgHub`, `ChatRoom`, `SequentialPipeline`, `sequential_pipeline`, `FanoutPipeline`, `fanout_pipeline`, `stream_printing_messages` |
+| `agentscope.session` | `SessionBase`, `JSONSession`, `RedisSession` |
+| `agentscope.rag` | `Document`, `DocMetadata`, readers (`TextReader`, `PDFReader`, `ImageReader`, `WordReader`, `ExcelReader`, `PowerPointReader`), stores (`QdrantStore`, `MilvusLiteStore`, `OceanBaseStore`, `MongoDBStore`, `AlibabaCloudMySQLStore`), `KnowledgeBase`, `SimpleKnowledge` |
+| `agentscope.evaluate` | `EvaluatorBase`, `RayEvaluator`, `GeneralEvaluator`, `MetricBase`, `MetricResult`, benchmarks (`ACEBenchmark`, `ACEAccuracy`, `ACEProcessAccuracy`, `ACEPhone`), `Task`, `SolutionOutput` |
+| `agentscope.tracing` | `setup_tracing`, `trace`, `trace_llm`, `trace_reply`, `trace_format`, `trace_toolkit`, `trace_embedding` |
+| `agentscope.realtime` | `RealtimeModelBase`, `DashScopeRealtimeModel`, `OpenAIRealtimeModel`, `GeminiRealtimeModel`, event types |
+| `agentscope.tts` | `TTSModelBase`, `TTSResponse`, `TTSUsage`, `DashScopeTTSModel`, `DashScopeRealtimeTTSModel`, `GeminiTTSModel`, `OpenAITTSModel`, CosyVoice variants |
+| `agentscope.mcp` | `MCPToolFunction`, `MCPClientBase`, `StatefulClientBase`, `StdIOStatefulClient`, `HttpStatelessClient`, `HttpStatefulClient` |
+| `agentscope.a2a` | `AgentCardResolverBase`, `FileAgentCardResolver`, `WellKnownAgentCardResolver`, `NacosAgentCardResolver` |
+| `agentscope.tuner` | `tune`, `select_model`, `tune_prompt`, config/result/validator types |
+| `agentscope.embedding` | `EmbeddingModelBase`, `EmbeddingResponse`, `EmbeddingUsage`, DashScope/OpenAI/Gemini/Ollama text/multimodal embeddings, `FileEmbeddingCache` |
+| `agentscope.token` | `TokenCounterBase`, `CharTokenCounter`, `GeminiTokenCounter`, `OpenAITokenCounter`, `AnthropicTokenCounter`, `HuggingFaceTokenCounter` |
+| `agentscope.hooks` | `as_studio_forward_message_pre_print_hook` |
+| `agentscope.plan` | `SubTask`, `Plan`, `DefaultPlanToHint`, `PlanNotebook`, `PlanStorageBase`, `InMemoryPlanStorage` |
+| `agentscope.module` | `StateModule` |
+| `agentscope.types` | `AgentHookTypes`, `ReActAgentHookTypes`, `Embedding`, `JSONPrimitive`, `JSONSerializableObject`, `ToolFunction` |
+| `agentscope.exception` | `AgentOrientedExceptionBase`, `ToolInterruptedError`, `ToolNotFoundError`, `ToolInvalidArgumentsError` |
+
+---
+
+## Examples Directory
+
+```
+examples/
+├── agent/           # Specialized agents (deep_research, voice, react, a2a, realtime, browser)
+├── functionality/   # Feature showcases (memory, RAG, MCP, TTS, structured output, streaming)
+├── workflows/       # Multi-agent patterns (concurrent, conversation, debate, realtime)
+├── evaluation/      # ACE benchmark
+├── deployment/      # Planning agent deployment
+├── game/            # Werewolves game
+├── tuner/           # Model tuning, prompt tuning, model selection
+└── integration/     # AlibabaCloud MCP, Qwen deep research
+```
+
+New agent examples belong in `examples/`, not in `src/agentscope/agent/` — the core library maintains only `ReActAgent` and protocol agents.
 
 ---
 
@@ -310,3 +394,4 @@ Long-term memory backends: `JSONSession`, `RedisSession` (requires `redis` optio
 - Adding logic without corresponding unit tests in `tests/`.
 - Hardcoding credentials or model names that should be configurable.
 - Amending published commits; always create new commits.
+- Adding optional deps to the core `dependencies` list in `pyproject.toml`.
