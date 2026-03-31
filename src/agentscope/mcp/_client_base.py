@@ -84,10 +84,36 @@ class MCPClientBase:
                             text=content.resource.model_dump_json(indent=2),
                         ),
                     )
+                elif isinstance(
+                    content.resource,
+                    mcp.types.BlobResourceContents,
+                ):
+                    mime_type = content.resource.mimeType or "application/octet-stream"
+                    source = Base64Source(
+                        type="base64",
+                        media_type=mime_type,
+                        data=content.resource.blob,
+                    )
+                    if mime_type.startswith("image/"):
+                        as_content.append(
+                            ImageBlock(type="image", source=source),
+                        )
+                    elif mime_type.startswith("audio/"):
+                        as_content.append(
+                            AudioBlock(type="audio", source=source),
+                        )
+                    elif mime_type.startswith("video/"):
+                        as_content.append(
+                            VideoBlock(type="video", source=source),
+                        )
+                    else:
+                        as_content.append(
+                            TextBlock(
+                                type="text",
+                                text=content.resource.blob,
+                            ),
+                        )
                 else:
-                    # TODO: support the BlobResourceContents in the future,
-                    #  which is a base64-encoded string representing the
-                    #  binary data
                     logger.error(
                         "Unsupported EmbeddedResource content type: %s. "
                         "Skipping this content.",
