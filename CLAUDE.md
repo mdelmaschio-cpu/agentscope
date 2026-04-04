@@ -1,6 +1,6 @@
 # AgentScope – AI Assistant Guide (CLAUDE.md)
 
-AgentScope is a flexible, production-ready multi-agent framework (v1.0.18) by Alibaba Tongyi Lab. It supports building, running, and evaluating multi-agent pipelines with integrations for major LLM providers, RAG, memory, MCP, A2A, real-time voice, and model tuning.
+AgentScope is a flexible, production-ready multi-agent framework (v1.0.19) by Alibaba Tongyi Lab. It supports building, running, and evaluating multi-agent pipelines with integrations for major LLM providers, RAG, memory, MCP, A2A, real-time voice, and model tuning.
 
 - **External docs:** https://doc.agentscope.io/
 - **License:** Apache 2.0
@@ -76,7 +76,7 @@ coverage report -m
 pytest tests/agent_test.py -v
 ```
 
-Tests use `IsolatedAsyncioTestCase` because agents are async. CI runs on Ubuntu, Windows, macOS × Python 3.10/3.11/3.12.
+Tests use `IsolatedAsyncioTestCase` because agents are async. CI runs on Ubuntu, Windows, macOS × Python 3.10/3.11/3.12. The test suite currently has 57 test files.
 
 ---
 
@@ -184,7 +184,7 @@ Use reStructuredText for links, notes, tips, and code blocks:
 
 Never add optional dependencies to the core `dependencies` list.
 
-**Core dependencies** (may be imported at module top level): `aiofiles`, `aioitertools`, `anthropic`, `dashscope`, `docstring_parser`, `filetype`, `json5`, `json_repair`, `mcp>=1.13`, `numpy`, `openai`, `opentelemetry-*`, `python-datauri`, `python-frontmatter`, `python-socketio`, `shortuuid`, `sounddevice`, `sqlalchemy`, `tiktoken`.
+**Core dependencies** (may be imported at module top level): `aiofiles`, `aioitertools`, `anthropic`, `dashscope`, `docstring_parser`, `filetype`, `json5`, `json_repair`, `mcp>=1.13`, `numpy`, `openai`, `opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-semantic-conventions`, `python-datauri`, `python-frontmatter`, `python-socketio`, `shortuuid`, `sounddevice`, `sqlalchemy`, `tiktoken`.
 
 **Optional dependency groups:** `a2a`, `realtime`, `models` (ollama, gemini), `tokens` (transformers, jinja2), `redis_memory`, `mem0ai`, `reme`, `memory`, `readers`, `vdbs`, `rag`, `evaluate`, `tuner`, `full`.
 
@@ -192,7 +192,7 @@ Never add optional dependencies to the core `dependencies` list.
 
 ## Pre-commit Checks
 
-The pipeline enforces: `black` (79-char line limit), `flake8`, `pylint`, `mypy` (strict), `check-yaml/json/toml`, `detect-private-key`, `add-trailing-comma`, `pyroma`.
+The pipeline enforces: `black` (79-char line limit), `flake8`, `pylint`, `mypy` (strict), `check-yaml/json/toml/xml`, `check-ast`, `check-docstring-first`, `detect-private-key`, `trailing-whitespace`, `fix-encoding-pragma`, `add-trailing-comma`, `pyroma`.
 
 - **File-level skip comments are prohibited** (e.g., `# noqa: ALL`, `# type: ignore` on a whole file).
 - The only permitted skip is for agent system prompt parameters where `\n` formatting would break checks.
